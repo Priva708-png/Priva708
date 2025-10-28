@@ -1,3 +1,6 @@
+
+const API_URL = "https://priva708.onrender.com"; // Mets ici l'URL Render de ton backend
+
 // Affiche les sections selon l'état de connexion
 function showSection(section) {
   document.getElementById('auth').style.display = section === 'auth' ? 'block' : 'none';
@@ -16,7 +19,7 @@ document.getElementById('loginForm').onsubmit = async function(e) {
   e.preventDefault();
   const email = document.getElementById('loginEmail').value;
   const code = document.getElementById('loginCode').value;
-  const res = await fetch('/login', {
+  const res = await fetch(`${API_URL}/login`, {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({email, code})
@@ -39,7 +42,7 @@ document.getElementById('registerForm').onsubmit = async function(e) {
   const last = document.getElementById('registerLast').value;
   const email = document.getElementById('registerEmail').value;
   const code = document.getElementById('registerCode').value;
-  const res = await fetch('/register', {
+  const res = await fetch(`${API_URL}/register`, {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({first, last, email, code})
@@ -58,7 +61,7 @@ document.getElementById('sendForm').onsubmit = async function(e) {
   const to = document.getElementById('sendTo').value;
   const content = document.getElementById('sendContent').value;
   const from = window.sessionStorage.getItem('user');
-  const res = await fetch('/send_message', {
+  const res = await fetch(`${API_URL}/send_message`, {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({from, to, content})
@@ -76,7 +79,7 @@ document.getElementById('sendForm').onsubmit = async function(e) {
 // Chargement de la boîte de réception
 async function loadInbox() {
   const user = window.sessionStorage.getItem('user');
-  const res = await fetch('/inbox?email=' + encodeURIComponent(user));
+  const res = await fetch(`${API_URL}/inbox?email=` + encodeURIComponent(user));
   const data = await res.json();
   const inbox = document.getElementById('inbox');
   inbox.innerHTML = '';
