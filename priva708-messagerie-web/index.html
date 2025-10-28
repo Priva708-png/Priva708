@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Priva-708 Web</title>
+  <link rel="stylesheet" href="style>
+    <h1>Priva-708 — Messagerie privée et sécurisée</h1>
+  </header>
+  <main>
+    <section id="auth">
+      <h2>Connexion</h2>
+      <form id="loginForm">
+        <input type="email" id="loginEmail" placeholder="Email" required>
+        <input type="password" id="loginCode" placeholder="Code" required>
+        <button type="submit">Se connecter</button>
+      </form>
+      <h2>Inscription</h2>
+      <form id="registerForm">
+        <input type="text" id="registerFirst" placeholder="Prénom" required>
+        <input type="text" id="registerLast" placeholder="Nom" required>
+        <input type="email" id="registerEmail" placeholder="Email" required>
+        <input type="password" id="registerCode" placeholder="Code" required>
+        <button type="submit">Créer un compte</button>
+      </form>
+    </section>
+    <section id="messagerie" style="display:none;">
+      <h2>Boîte de réception</h2>
+      <ul id="inbox"></ul>
+      <h2>Envoyer un message</h2>
+      <form id="sendForm">
+        <input type="email" id="sendTo" placeholder="Destinataire (email)" required>
+        <textarea id="sendContent" placeholder="Votre message..." required></textarea>
+        <button type="submit">Envoyer</button>
+      </form>
+    </section>
+    <div id="status"></div>
+  </main>
+  app.js</script>
+</body>
+</html>
+``
