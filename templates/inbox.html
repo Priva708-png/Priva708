@@ -273,8 +273,11 @@
       const readModal = new bootstrap.Modal(document.getElementById('readModal'));
       let currentRead = { box: null, id: null, requires_code: false };
 
-      document.querySelectorAll('.read-btn').forEach(b => {
-        b.addEventListener('click', (ev) => {
+      document.querySelectorAll('.del-btn').forEach(b => {
+        b.addEventListener('click', async (ev) => {
+			...
+		});
+	  });
           currentRead.box = ev.currentTarget.dataset.box;
           currentRead.id = ev.currentTarget.dataset.id;
           document.getElementById('read-plaintext').style.display = 'none';
@@ -617,3 +620,4 @@
     </script>
   </body>
 </html>
+
