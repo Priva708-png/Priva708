@@ -26,6 +26,7 @@
       small { color: #cbd5e1; }
       /* small video sizing for modal */
       video { border-radius: 8px; background: #000; max-height: 60vh; }
+      .opacity-50 { opacity: 0.5; }
     </style>
   </head>
   <body>
@@ -162,8 +163,8 @@
             <div id="compose-error" class="mb-2 text-danger"></div>
             <div class="mb-2">
               <label class="form-label">Destinataire (email)</label>
-	      <input id="compose-recipient" class="form-control" list="emailList" placeholder="ex: alice@example.com" autocomplete="off">
-	      <datalist id="emailList"></datalist>
+              <input id="compose-recipient" class="form-control" list="emailList" placeholder="ex: alice@example.com" autocomplete="off">
+              <datalist id="emailList"></datalist>
             </div>
             <div class="mb-2">
               <label class="form-label">Contenu</label>
@@ -225,6 +226,11 @@
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 
     <script>
+      // small debug helpers
+      window.addEventListener('error', (e) => console.error('Global JS error:', e.message, e.filename, e.lineno, e.colno));
+      window.addEventListener('unhandledrejection', (e) => console.error('Unhandled promise rejection:', e.reason));
+      console.log('inbox.js loaded', new Date().toISOString());
+
       // Helpers
       function showError(el, text){ el.textContent = text; el.style.display = text ? 'block' : 'none'; }
 
@@ -269,79 +275,113 @@
         }
       });
 
-      // Read / Delete buttons (delegation)
+      // Read modal
       const readModal = new bootstrap.Modal(document.getElementById('readModal'));
       let currentRead = { box: null, id: null, requires_code: false };
 
-// Delete (event delegation) — gère aussi les éléments ajoutés dynamiquement
-document.addEventListener('click', async function (ev) {
-  const btn = ev.target.closest && ev.target.closest('.del-btn');
-  if (!btn) return; // click pas sur un bouton delete
+      // delete from modal
+      document.getElementById('deleteMsgBtn').addEventListener('click', async () => {
+        if (!confirm('Voulez-vous vraiment supprimer ce message ?')) return;
+        try {
+          const res = await fetch('/api/message/delete', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ box: currentRead.box, msg_id: currentRead.id })
+          });
+          const j = await res.json();
+          if (res.ok && j.ok) {
+            readModal.hide();
+            // remove from DOM if exists, else reload
+            document.querySelectorAll(`[data-id="${currentRead.id}"]`).forEach(el=>{
+              const li = el.closest('.list-group-item');
+              if (li) li.remove();
+            });
+            // fallback reload
+            // location.reload();
+          } else {
+            showError(document.getElementById('read-error'), j.error || 'Erreur suppression');
+          }
+        } catch (err) {
+          showError(document.getElementById('read-error'), 'Erreur réseau');
+        }
+      });
 
-  ev.preventDefault();
-  const box = btn.dataset.box;
-  const id = btn.dataset.id;
-  if (!box || !id) {
-    console.warn('del-btn manque data-box ou data-id', btn);
-    alert('Erreur interne : identifiant manquant.');
-    return;
-  }
+      // Delegated click handler: read / delete (list) / call
+      document.addEventListener('click', async function (ev) {
+        // DELETE button in list
+        const delBtn = ev.target.closest && ev.target.closest('.del-btn');
+        if (delBtn) {
+          ev.preventDefault();
+          const box = delBtn.dataset.box;
+          const id = delBtn.dataset.id;
+          if (!box || !id) { alert('Identifiant manquant'); return; }
+          if (!confirm('Supprimer ce message ?')) return;
+          try {
+            delBtn.disabled = true;
+            delBtn.classList.add('opacity-50');
+            const res = await fetch('/api/message/delete', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ box: box, msg_id: id })
+            });
+            const j = await res.json();
+            if (res.ok && j.ok) {
+              const li = delBtn.closest('.list-group-item');
+              if (li) li.remove(); else location.reload();
+            } else {
+              alert(j.error || 'Erreur suppression');
+              delBtn.disabled = false;
+              delBtn.classList.remove('opacity-50');
+            }
+          } catch (err) {
+            console.error('delete fetch error', err);
+            alert('Erreur réseau');
+            delBtn.disabled = false;
+            delBtn.classList.remove('opacity-50');
+          }
+          return;
+        }
 
-  if (!confirm('Supprimer ce message ?')) return;
-
-  try {
-    btn.disabled = true;
-    btn.classList.add('opacity-50');
-    const res = await fetch('/api/message/delete', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ box: box, msg_id: id })
-    });
-    const j = await res.json();
-    if (res.ok && j.ok) {
-      // Option 1: reload page
-      // location.reload();
-
-      // Option 2: retirer l'élément du DOM sans reload
-      const li = btn.closest('.list-group-item');
-      if (li) li.remove();
-      // si tu veux, afficher un petit toast
-    } else {
-      console.error('delete error', j);
-      alert(j.error || 'Erreur suppression');
-      btn.disabled = false;
-      btn.classList.remove('opacity-50');
-    }
-  } catch (err) {
-    console.error('Erreur fetch delete', err);
-    alert('Erreur réseau lors de la suppression');
-    btn.disabled = false;
-    btn.classList.remove('opacity-50');
-  }
-});
-          currentRead.box = ev.currentTarget.dataset.box;
-          currentRead.id = ev.currentTarget.dataset.id;
+        // READ / VIEW button
+        const readBtn = ev.target.closest && ev.target.closest('.read-btn');
+        if (readBtn) {
+          ev.preventDefault();
+          currentRead.box = readBtn.dataset.box;
+          currentRead.id = readBtn.dataset.id;
           document.getElementById('read-plaintext').style.display = 'none';
           document.getElementById('read-plaintext').textContent = '';
           document.getElementById('msg_code').value = '';
           document.getElementById('account_code').value = '';
           showError(document.getElementById('read-error'), '');
-          // If inbox item may be protected, show code input by default hidden; we'll reveal if server says required
           document.getElementById('requires-code-row').style.display = 'none';
-          // set meta
           document.getElementById('read-meta').textContent = (currentRead.box === 'inbox' ? 'Lecture (réception) — ID ' : 'Message envoyé — ID ') + currentRead.id;
-          // reveal modal
           readModal.show();
-          // if sent box, no extra code needed (we stored plaintext)
+          // If sent: hide account code
           if (currentRead.box === 'sent') {
-            // show account code as optional (not needed) but keep visible
             document.getElementById('account-code-row').style.display = 'none';
           } else {
             document.getElementById('account-code-row').style.display = 'block';
           }
-        });
+          return;
+        }
+
+        // CALL button
+        const callBtn = ev.target.closest && ev.target.closest('.call-btn');
+        if (callBtn) {
+          ev.preventDefault();
+          const email = callBtn.dataset.email;
+          if (!email) { alert('Adresse inconnue'); return; }
+          try {
+            await startCall(email);
+          } catch (err) {
+            console.error('Erreur startCall', err);
+            alert('Impossible de lancer l\'appel : ' + (err.message || err));
+          }
+          return;
+        }
       });
 
+      // Decrypt / Read content from modal
       document.getElementById('readDecryptBtn').addEventListener('click', async () => {
         showError(document.getElementById('read-error'), '');
         const btn = document.getElementById('readDecryptBtn');
@@ -361,14 +401,11 @@ document.addEventListener('click', async function (ev) {
           if (res.ok && j.ok) {
             document.getElementById('read-plaintext').style.display = 'block';
             document.getElementById('read-plaintext').textContent = j.plaintext;
-            // hide inputs once decrypted
             document.getElementById('requires-code-row').style.display = 'none';
             document.getElementById('account-code-row').style.display = 'none';
           } else {
-            // If server asks for code (401) show code row
             if (res.status === 401) {
               showError(document.getElementById('read-error'), j.error || 'Accès refusé');
-              // show the code input if it's an inbox-protected case
               document.getElementById('requires-code-row').style.display = 'block';
             } else {
               showError(document.getElementById('read-error'), j.error || 'Erreur lecture');
@@ -379,39 +416,6 @@ document.addEventListener('click', async function (ev) {
         } finally {
           btn.disabled = false;
         }
-      });
-
-      // Delete
-      document.getElementById('deleteMsgBtn').addEventListener('click', async () => {
-        if (!confirm('Voulez-vous vraiment supprimer ce message ?')) return;
-        const res = await fetch('/api/message/delete', {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ box: currentRead.box, msg_id: currentRead.id })
-        });
-        const j = await res.json();
-        if (res.ok && j.ok) {
-          readModal.hide();
-          location.reload();
-        } else {
-          showError(document.getElementById('read-error'), j.error || 'Erreur suppression');
-        }
-      });
-
-      // Delete buttons in lists
-      document.querySelectorAll('.del-btn').forEach(b => {
-        b.addEventListener('click', async (ev) => {
-          const box = ev.currentTarget.dataset.box;
-          const id = ev.currentTarget.dataset.id;
-          if (!confirm('Supprimer ce message ?')) return;
-          const res = await fetch('/api/message/delete', {
-            method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ box, msg_id: id })
-          });
-          const j = await res.json();
-          if (res.ok && j.ok) location.reload(); else alert(j.error || 'Erreur');
-        });
       });
 
       // Small UX: when compose modal hidden, clear fields
@@ -426,13 +430,12 @@ document.addEventListener('click', async function (ev) {
       const emailList = document.getElementById('emailList');
 
       emailInput.addEventListener('focus', async () => {
-        // si déjà chargé, ne recharge pas
         if (emailList.children.length > 0) return;
         try {
           const res = await fetch('/api/users');
           const j = await res.json();
           if (res.ok && j.emails) {
-            emailList.innerHTML = ''; // vide
+            emailList.innerHTML = '';
             j.emails.forEach(e => {
               const opt = document.createElement('option');
               opt.value = e;
@@ -452,9 +455,7 @@ document.addEventListener('click', async function (ev) {
       const RTC_CONFIG = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
       // init socket.io (will send cookie automatically)
-      const socket = io({
-        transports: ['websocket']
-      });
+      const socket = io({ transports: ['websocket'] });
 
       // peer connection and streams
       let pc = null;
@@ -486,13 +487,11 @@ document.addEventListener('click', async function (ev) {
         remoteStream = new MediaStream();
         remoteVid.srcObject = remoteStream;
 
-        // add local tracks if available
         if (localStream) {
           localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
         }
 
         pc.ontrack = (evt) => {
-          // add incoming tracks to remote stream
           evt.streams[0].getTracks().forEach(t => remoteStream.addTrack(t));
         };
 
@@ -512,34 +511,26 @@ document.addEventListener('click', async function (ev) {
         return pc;
       }
 
-      // start an outgoing call to targetEmail
       async function startCall(targetEmail) {
         currentTarget = targetEmail;
         callWithTitle.textContent = 'Appel vers ' + targetEmail;
         await startLocalMedia();
         createPeerConnection(targetEmail);
 
-        // ensure local tracks are present (in case startLocalMedia called earlier)
+        // ensure local tracks are present
         if (localStream) localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
 
-        // send offer via socket
-        socket.emit('webrtc_offer', { to: targetEmail, from: '{{ user.first }}' /* placeholder */ , sdp: pc.localDescription });
+        socket.emit('webrtc_offer', { to: targetEmail, sdp: pc.localDescription });
         callModal.show();
       }
 
-      // when receiving an offer
       socket.on('webrtc_offer', async (data) => {
-        // data: { from: senderEmail, sdp }
-        const sender = data.from;
-        // ask user to accept
+        const sender = data.from || data.sender || 'inconnu';
         const accept = confirm(`Appel entrant de ${sender} — accepter ?`);
-        if (!accept) {
-          // optionally send a rejection event (not implemented)
-          return;
-        }
+        if (!accept) return;
         currentTarget = sender;
         callWithTitle.textContent = 'Appel de ' + sender;
         await startLocalMedia();
@@ -549,7 +540,7 @@ document.addEventListener('click', async function (ev) {
           await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
-          socket.emit('webrtc_answer', { to: sender, from: '{{ user.first }}' /* placeholder */, sdp: pc.localDescription });
+          socket.emit('webrtc_answer', { to: sender, sdp: pc.localDescription });
           callModal.show();
         } catch (err) {
           console.error('Erreur handling offer', err);
@@ -557,7 +548,6 @@ document.addEventListener('click', async function (ev) {
       });
 
       socket.on('webrtc_answer', async (data) => {
-        // data: { from: calleeEmail, sdp }
         if (!pc) return;
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
@@ -567,7 +557,6 @@ document.addEventListener('click', async function (ev) {
       });
 
       socket.on('webrtc_ice', async (data) => {
-        // data: { from, candidate }
         if (!data || !data.candidate || !pc) return;
         try {
           await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
@@ -576,12 +565,10 @@ document.addEventListener('click', async function (ev) {
         }
       });
 
-      // handle incoming_call (simple notification)
       socket.on('incoming_call', (data) => {
         console.log('incoming call', data);
       });
 
-      // stop and cleanup call
       function stopCall() {
         try {
           if (pc) {
@@ -596,20 +583,19 @@ document.addEventListener('click', async function (ev) {
             localStream = null;
           }
         } catch(e){}
-
-        try { if (remoteStream) { remoteStream.getTracks().forEach(t => { try { t.stop(); } catch(e){} }); remoteStream = null; } } catch(e){}
-
+        try {
+          if (remoteStream) {
+            remoteStream.getTracks().forEach(t => { try { t.stop(); } catch(e){} });
+            remoteStream = null;
+          }
+        } catch(e){}
         localVid.srcObject = null;
         remoteVid.srcObject = null;
         currentTarget = null;
         callModal.hide();
       }
 
-      document.getElementById('hangupBtn').addEventListener('click', () => {
-        stopCall();
-      });
-
-      // toggle camera
+      document.getElementById('hangupBtn').addEventListener('click', () => stopCall());
       toggleCamBtn.addEventListener('click', () => {
         if (!localStream) return;
         const videoTrack = localStream.getVideoTracks()[0];
@@ -617,8 +603,6 @@ document.addEventListener('click', async function (ev) {
         videoTrack.enabled = !videoTrack.enabled;
         toggleCamBtn.textContent = videoTrack.enabled ? 'Désactiver caméra' : 'Activer caméra';
       });
-
-      // toggle microphone
       toggleMicBtn.addEventListener('click', () => {
         if (!localStream) return;
         const audioTrack = localStream.getAudioTracks()[0];
@@ -627,39 +611,8 @@ document.addEventListener('click', async function (ev) {
         toggleMicBtn.textContent = audioTrack.enabled ? 'Couper micro' : 'Activer micro';
       });
 
-      // bind call buttons (delegation)
-      document.querySelectorAll('.call-btn').forEach(btn => {
-        btn.addEventListener('click', async (ev) => {
-          const email = ev.currentTarget.dataset.email;
-          if (!email) {
-            alert('Adresse inconnue');
-            return;
-          }
-          try {
-            await startCall(email);
-          } catch (err) {
-            console.error('Erreur startCall', err);
-            alert('Impossible de lancer l\'appel : ' + err.message);
-          }
-        });
-      });
-
-      // close modal cleanup
-      document.getElementById('closeCallModal').addEventListener('click', () => {
-        stopCall();
-      });
-
-      // If user navigates away, clean up
-      window.addEventListener('beforeunload', () => {
-        try { socket.disconnect(); } catch(e){}
-        stopCall();
-      });
-
-      /***************
-       * End WebRTC  *
-       ***************/
+      document.getElementById('closeCallModal').addEventListener('click', () => stopCall());
+      window.addEventListener('beforeunload', () => { try { socket.disconnect(); } catch(e){} stopCall(); });
     </script>
   </body>
 </html>
-
-
