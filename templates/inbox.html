@@ -24,6 +24,8 @@
       .accent { color: #8ad0ff; }
       .card-glass { background: linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02)); border-radius: 12px; padding: 16px; }
       small { color: #cbd5e1; }
+      /* small video sizing for modal */
+      video { border-radius: 8px; background: #000; max-height: 60vh; }
     </style>
   </head>
   <body>
@@ -73,7 +75,9 @@
                             <span class="badge bg-warning text-dark me-2">Protégé</span>
                           {% endif %}
                           <button class="btn btn-sm btn-primary me-2 read-btn" data-box="inbox" data-id="{{ m.id }}">Lire</button>
-                          <button class="btn btn-sm btn-outline-danger del-btn" data-box="inbox" data-id="{{ m.id }}">Supprimer</button>
+                          <button class="btn btn-sm btn-outline-danger del-btn me-2" data-box="inbox" data-id="{{ m.id }}">Supprimer</button>
+                          <!-- Call button: calls the sender -->
+                          <button class="btn btn-sm btn-outline-success call-btn" data-email="{{ m.from }}" title="Appeler {{ m.from }}">📞</button>
                         </div>
                       </div>
                     {% endfor %}
@@ -95,7 +99,9 @@
                         </div>
                         <div class="ms-auto d-flex align-items-center">
                           <button class="btn btn-sm btn-outline-primary me-2 read-btn" data-box="sent" data-id="{{ m.id }}">Voir</button>
-                          <button class="btn btn-sm btn-outline-danger del-btn" data-box="sent" data-id="{{ m.id }}">Supprimer</button>
+                          <button class="btn btn-sm btn-outline-danger del-btn me-2" data-box="sent" data-id="{{ m.id }}">Supprimer</button>
+                          <!-- Call button: calls the recipient -->
+                          <button class="btn btn-sm btn-outline-success call-btn" data-email="{{ m.to }}" title="Appeler {{ m.to }}">📞</button>
                         </div>
                       </div>
                     {% endfor %}
@@ -180,7 +186,44 @@
       </div>
     </div>
 
+    <!-- Modal: Call (audio + video) -->
+    <div class="modal fade" id="callModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-centered">
+        <div class="modal-content bg-dark text-light">
+          <div class="modal-header">
+            <h5 class="modal-title" id="callWith">Appel</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" id="closeCallModal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="row g-2">
+              <div class="col-md-6 d-flex justify-content-center align-items-center">
+                <div class="w-100 text-center">
+                  <div class="mb-2 small text-muted">Ta vidéo</div>
+                  <video id="localVideo" autoplay muted playsinline style="width:100%; max-height:60vh;"></video>
+                </div>
+              </div>
+              <div class="col-md-6 d-flex justify-content-center align-items-center">
+                <div class="w-100 text-center">
+                  <div class="mb-2 small text-muted">Vidéo distante</div>
+                  <video id="remoteVideo" autoplay playsinline style="width:100%; max-height:60vh;"></video>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button id="toggleCamBtn" class="btn btn-outline-light">Désactiver caméra</button>
+            <button id="toggleMicBtn" class="btn btn-outline-light">Couper micro</button>
+            <button id="hangupBtn" class="btn btn-danger">Raccrocher</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- socket.io client (cdn) -->
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
     <script>
       // Helpers
       function showError(el, text){ el.textContent = text; el.style.display = text ? 'block' : 'none'; }
@@ -327,38 +370,250 @@
         });
       });
 
-      // When modal opens for inbox read, show requires-code row only if server later complains;
-      // For nice UX: when opening for inbox, pre-show requires-code input hidden; server will prompt by 401 response.
-
       // Small UX: when compose modal hidden, clear fields
       document.getElementById('composeModal').addEventListener('hidden.bs.modal', () => {
         document.getElementById('compose-recipient').value = '';
         document.getElementById('compose-content').value = '';
         document.getElementById('compose-code').value = '';
       });
+
       // === Autocomplete emails ===
-const emailInput = document.getElementById('compose-recipient');
-const emailList = document.getElementById('emailList');
+      const emailInput = document.getElementById('compose-recipient');
+      const emailList = document.getElementById('emailList');
 
-emailInput.addEventListener('focus', async () => {
-  // si déjà chargé, ne recharge pas
-  if (emailList.children.length > 0) return;
-  try {
-    const res = await fetch('/api/users');
-    const j = await res.json();
-    if (res.ok && j.emails) {
-      emailList.innerHTML = ''; // vide
-      j.emails.forEach(e => {
-        const opt = document.createElement('option');
-        opt.value = e;
-        emailList.appendChild(opt);
+      emailInput.addEventListener('focus', async () => {
+        // si déjà chargé, ne recharge pas
+        if (emailList.children.length > 0) return;
+        try {
+          const res = await fetch('/api/users');
+          const j = await res.json();
+          if (res.ok && j.emails) {
+            emailList.innerHTML = ''; // vide
+            j.emails.forEach(e => {
+              const opt = document.createElement('option');
+              opt.value = e;
+              emailList.appendChild(opt);
+            });
+          }
+        } catch (err) {
+          console.warn('Erreur chargement liste emails', err);
+        }
       });
-    }
-  } catch (err) {
-    console.warn('Erreur chargement liste emails', err);
-  }
-});
 
+      /*******************************
+       *  WebRTC + Socket.IO section *
+       *******************************/
+
+      // STUN configuration
+      const RTC_CONFIG = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+      // init socket.io (will send cookie automatically)
+      const socket = io({
+        transports: ['websocket']
+      });
+
+      // peer connection and streams
+      let pc = null;
+      let localStream = null;
+      let remoteStream = null;
+      let currentTarget = null; // email of the peer we are calling / receiving from
+      const callModal = new bootstrap.Modal(document.getElementById('callModal'));
+      const localVid = document.getElementById('localVideo');
+      const remoteVid = document.getElementById('remoteVideo');
+      const callWithTitle = document.getElementById('callWith');
+      const toggleCamBtn = document.getElementById('toggleCamBtn');
+      const toggleMicBtn = document.getElementById('toggleMicBtn');
+
+      // start local media
+      async function startLocalMedia() {
+        if (localStream) return localStream;
+        try {
+          localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+          localVid.srcObject = localStream;
+          return localStream;
+        } catch (err) {
+          alert('Impossible d\'accéder à la caméra/micro : ' + err.message);
+          throw err;
+        }
+      }
+
+      function createPeerConnection(targetEmail) {
+        pc = new RTCPeerConnection(RTC_CONFIG);
+        remoteStream = new MediaStream();
+        remoteVid.srcObject = remoteStream;
+
+        // add local tracks if available
+        if (localStream) {
+          localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+        }
+
+        pc.ontrack = (evt) => {
+          // add incoming tracks to remote stream
+          evt.streams[0].getTracks().forEach(t => remoteStream.addTrack(t));
+        };
+
+        pc.onicecandidate = (ev) => {
+          if (ev.candidate) {
+            socket.emit('webrtc_ice', { to: targetEmail, candidate: ev.candidate });
+          }
+        };
+
+        pc.onconnectionstatechange = () => {
+          if (!pc) return;
+          if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+            stopCall();
+          }
+        };
+
+        return pc;
+      }
+
+      // start an outgoing call to targetEmail
+      async function startCall(targetEmail) {
+        currentTarget = targetEmail;
+        callWithTitle.textContent = 'Appel vers ' + targetEmail;
+        await startLocalMedia();
+        createPeerConnection(targetEmail);
+
+        // ensure local tracks are present (in case startLocalMedia called earlier)
+        if (localStream) localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        // send offer via socket
+        socket.emit('webrtc_offer', { to: targetEmail, from: '{{ user.first }}' /* placeholder */ , sdp: pc.localDescription });
+        callModal.show();
+      }
+
+      // when receiving an offer
+      socket.on('webrtc_offer', async (data) => {
+        // data: { from: senderEmail, sdp }
+        const sender = data.from;
+        // ask user to accept
+        const accept = confirm(`Appel entrant de ${sender} — accepter ?`);
+        if (!accept) {
+          // optionally send a rejection event (not implemented)
+          return;
+        }
+        currentTarget = sender;
+        callWithTitle.textContent = 'Appel de ' + sender;
+        await startLocalMedia();
+        createPeerConnection(sender);
+
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          socket.emit('webrtc_answer', { to: sender, from: '{{ user.first }}' /* placeholder */, sdp: pc.localDescription });
+          callModal.show();
+        } catch (err) {
+          console.error('Erreur handling offer', err);
+        }
+      });
+
+      socket.on('webrtc_answer', async (data) => {
+        // data: { from: calleeEmail, sdp }
+        if (!pc) return;
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        } catch (err) {
+          console.warn('setRemoteDescription failed', err);
+        }
+      });
+
+      socket.on('webrtc_ice', async (data) => {
+        // data: { from, candidate }
+        if (!data || !data.candidate || !pc) return;
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        } catch (err) {
+          console.warn('addIceCandidate failed', err);
+        }
+      });
+
+      // handle incoming_call (simple notification)
+      socket.on('incoming_call', (data) => {
+        console.log('incoming call', data);
+      });
+
+      // stop and cleanup call
+      function stopCall() {
+        try {
+          if (pc) {
+            pc.getSenders().forEach(s => { try { s.track && s.track.stop(); } catch(e){} });
+            pc.close();
+            pc = null;
+          }
+        } catch(e) { console.warn(e); }
+        try {
+          if (localStream) {
+            localStream.getTracks().forEach(t => { try { t.stop(); } catch(e){} });
+            localStream = null;
+          }
+        } catch(e){}
+
+        try { if (remoteStream) { remoteStream.getTracks().forEach(t => { try { t.stop(); } catch(e){} }); remoteStream = null; } } catch(e){}
+
+        localVid.srcObject = null;
+        remoteVid.srcObject = null;
+        currentTarget = null;
+        callModal.hide();
+      }
+
+      document.getElementById('hangupBtn').addEventListener('click', () => {
+        stopCall();
+      });
+
+      // toggle camera
+      toggleCamBtn.addEventListener('click', () => {
+        if (!localStream) return;
+        const videoTrack = localStream.getVideoTracks()[0];
+        if (!videoTrack) return;
+        videoTrack.enabled = !videoTrack.enabled;
+        toggleCamBtn.textContent = videoTrack.enabled ? 'Désactiver caméra' : 'Activer caméra';
+      });
+
+      // toggle microphone
+      toggleMicBtn.addEventListener('click', () => {
+        if (!localStream) return;
+        const audioTrack = localStream.getAudioTracks()[0];
+        if (!audioTrack) return;
+        audioTrack.enabled = !audioTrack.enabled;
+        toggleMicBtn.textContent = audioTrack.enabled ? 'Couper micro' : 'Activer micro';
+      });
+
+      // bind call buttons (delegation)
+      document.querySelectorAll('.call-btn').forEach(btn => {
+        btn.addEventListener('click', async (ev) => {
+          const email = ev.currentTarget.dataset.email;
+          if (!email) {
+            alert('Adresse inconnue');
+            return;
+          }
+          try {
+            await startCall(email);
+          } catch (err) {
+            console.error('Erreur startCall', err);
+            alert('Impossible de lancer l\'appel : ' + err.message);
+          }
+        });
+      });
+
+      // close modal cleanup
+      document.getElementById('closeCallModal').addEventListener('click', () => {
+        stopCall();
+      });
+
+      // If user navigates away, clean up
+      window.addEventListener('beforeunload', () => {
+        try { socket.disconnect(); } catch(e){}
+        stopCall();
+      });
+
+      /***************
+       * End WebRTC  *
+       ***************/
     </script>
   </body>
 </html>
