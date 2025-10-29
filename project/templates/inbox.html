@@ -1,0 +1,364 @@
+<!-- templates/inbox.html -->
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Priva-708 — Boîte</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+      body {
+        background: linear-gradient(135deg,#0f1720,#081226);
+        color: #e6eef6;
+        font-family: "Segoe UI", Roboto, sans-serif;
+        min-height: 100vh;
+      }
+      .glass {
+        backdrop-filter: blur(8px) saturate(120%);
+        -webkit-backdrop-filter: blur(8px) saturate(120%);
+        background-color: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.06);
+        border-radius: 12px;
+        padding: 20px;
+      }
+      .accent { color: #8ad0ff; }
+      .card-glass { background: linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02)); border-radius: 12px; padding: 16px; }
+      small { color: #cbd5e1; }
+    </style>
+  </head>
+  <body>
+    <div class="container py-5">
+      <div class="row justify-content-center">
+        <div class="col-11 col-md-10">
+          <div class="glass">
+            <div class="d-flex align-items-center mb-3">
+              <h3 class="me-auto accent">Priva-708</h3>
+              <div class="text-end">
+                <div>{{ user.first }} {{ user.last }}</div>
+                <button class="btn btn-sm btn-outline-light mt-1" id="logoutBtn">Déconnexion</button>
+              </div>
+            </div>
+
+            <div class="d-flex mb-3">
+              <button class="btn btn-success me-2" id="composeBtn">Nouveau message</button>
+              <div class="ms-auto">
+                <span class="text-muted small">Connecté en tant que</span>
+                <strong class="ms-1">{{ user.first }}</strong>
+              </div>
+            </div>
+
+            <!-- Tabs -->
+            <ul class="nav nav-tabs mb-3" id="boxTabs" role="tablist">
+              <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="inbox-tab" data-bs-toggle="tab" data-bs-target="#inbox" type="button" role="tab">📥 Réception</button>
+              </li>
+              <li class="nav-item" role="presentation">
+                <button class="nav-link" id="sent-tab" data-bs-toggle="tab" data-bs-target="#sent" type="button" role="tab">📤 Envoyés</button>
+              </li>
+            </ul>
+
+            <div class="tab-content">
+              <!-- INBOX -->
+              <div class="tab-pane fade show active" id="inbox" role="tabpanel">
+                {% if inbox %}
+                  <div class="list-group">
+                    {% for m in inbox %}
+                      <div class="list-group-item d-flex align-items-center">
+                        <div>
+                          <div><strong>ID {{ m.id }}</strong> — de <em>{{ m.from }}</em></div>
+                          <small>{{ (m.timestamp|int)|datetimeformat }}</small>
+                        </div>
+                        <div class="ms-auto d-flex align-items-center">
+                          {% if m.requires_code %}
+                            <span class="badge bg-warning text-dark me-2">Protégé</span>
+                          {% endif %}
+                          <button class="btn btn-sm btn-primary me-2 read-btn" data-box="inbox" data-id="{{ m.id }}">Lire</button>
+                          <button class="btn btn-sm btn-outline-danger del-btn" data-box="inbox" data-id="{{ m.id }}">Supprimer</button>
+                        </div>
+                      </div>
+                    {% endfor %}
+                  </div>
+                {% else %}
+                  <div class="card-glass">Aucun message pour l'instant.</div>
+                {% endif %}
+              </div>
+
+              <!-- SENT -->
+              <div class="tab-pane fade" id="sent" role="tabpanel">
+                {% if sent %}
+                  <div class="list-group">
+                    {% for m in sent %}
+                      <div class="list-group-item d-flex align-items-center">
+                        <div>
+                          <div><strong>ID {{ m.id }}</strong> — vers <em>{{ m.to }}</em></div>
+                          <small>{{ (m.timestamp|int)|datetimeformat }}</small>
+                        </div>
+                        <div class="ms-auto d-flex align-items-center">
+                          <button class="btn btn-sm btn-outline-primary me-2 read-btn" data-box="sent" data-id="{{ m.id }}">Voir</button>
+                          <button class="btn btn-sm btn-outline-danger del-btn" data-box="sent" data-id="{{ m.id }}">Supprimer</button>
+                        </div>
+                      </div>
+                    {% endfor %}
+                  </div>
+                {% else %}
+                  <div class="card-glass">Vous n'avez encore rien envoyé.</div>
+                {% endif %}
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Read message -->
+    <div class="modal fade" id="readModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content bg-dark text-light">
+          <div class="modal-header">
+            <h5 class="modal-title">Message</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div id="read-meta" class="mb-2 small text-muted"></div>
+            <div id="read-error" class="mb-2 text-danger"></div>
+
+            <div id="requires-code-row" class="mb-2" style="display:none;">
+              <label class="form-label">Code du message</label>
+              <input class="form-control" id="msg_code" placeholder="Entrez le code de protection (si requis)">
+            </div>
+
+            <div id="account-code-row" class="mb-2">
+              <label class="form-label">Ton code de compte (pour déverrouiller ta clé privée)</label>
+              <input class="form-control" id="account_code" placeholder="Ton code (même que celui de connexion)">
+            </div>
+
+            <pre id="read-plaintext" class="p-3 bg-light text-dark" style="white-space:pre-wrap; display:none;"></pre>
+          </div>
+          <div class="modal-footer">
+            <button type="button" id="readDecryptBtn" class="btn btn-primary">Déchiffrer / Afficher</button>
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fermer</button>
+            <button type="button" id="deleteMsgBtn" class="btn btn-danger">Supprimer</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Compose -->
+    <div class="modal fade" id="composeModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content bg-dark text-light">
+          <div class="modal-header">
+            <h5 class="modal-title">Nouveau message</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div id="compose-error" class="mb-2 text-danger"></div>
+            <div class="mb-2">
+              <label class="form-label">Destinataire (email)</label>
+	      <input id="compose-recipient" class="form-control" list="emailList" placeholder="ex: alice@example.com" autocomplete="off">
+	      <datalist id="emailList"></datalist>
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Contenu</label>
+              <textarea id="compose-content" class="form-control" rows="6"></textarea>
+            </div>
+            <div class="form-check form-switch mb-2">
+              <input class="form-check-input" type="checkbox" id="compose-protected">
+              <label class="form-check-label" for="compose-protected">Protéger par code</label>
+            </div>
+            <div id="compose-code-row" style="display:none;">
+              <label class="form-label">Code de protection (pour le destinataire)</label>
+              <input id="compose-code" class="form-control" placeholder="Code que le destinataire devra saisir pour lire">
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button id="sendMsgBtn" class="btn btn-success">Envoyer</button>
+            <button class="btn btn-secondary" data-bs-dismiss="modal">Annuler</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+      // Helpers
+      function showError(el, text){ el.textContent = text; el.style.display = text ? 'block' : 'none'; }
+
+      // Logout
+      document.getElementById('logoutBtn').addEventListener('click', async () => {
+        await fetch('/api/logout', {method:'POST'});
+        window.location = '/login';
+      });
+
+      // Compose modal
+      const composeModal = new bootstrap.Modal(document.getElementById('composeModal'));
+      document.getElementById('composeBtn').addEventListener('click', () => {
+        document.getElementById('compose-recipient').value = '';
+        document.getElementById('compose-content').value = '';
+        document.getElementById('compose-protected').checked = false;
+        document.getElementById('compose-code-row').style.display = 'none';
+        showError(document.getElementById('compose-error'), '');
+        composeModal.show();
+      });
+      document.getElementById('compose-protected').addEventListener('change', (e) => {
+        document.getElementById('compose-code-row').style.display = e.target.checked ? 'block' : 'none';
+      });
+
+      document.getElementById('sendMsgBtn').addEventListener('click', async () => {
+        const recipient = document.getElementById('compose-recipient').value.trim();
+        const content = document.getElementById('compose-content').value.trim();
+        const protectedFlag = document.getElementById('compose-protected').checked;
+        const code = document.getElementById('compose-code').value;
+        const body = { recipient, content, requires_code: protectedFlag };
+        if (protectedFlag) body.code = code;
+        const res = await fetch('/api/message/send', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(body)
+        });
+        const j = await res.json();
+        if (res.ok) {
+          composeModal.hide();
+          location.reload();
+        } else {
+          showError(document.getElementById('compose-error'), j.error || 'Erreur');
+        }
+      });
+
+      // Read / Delete buttons (delegation)
+      const readModal = new bootstrap.Modal(document.getElementById('readModal'));
+      let currentRead = { box: null, id: null, requires_code: false };
+
+      document.querySelectorAll('.read-btn').forEach(b => {
+        b.addEventListener('click', (ev) => {
+          currentRead.box = ev.currentTarget.dataset.box;
+          currentRead.id = ev.currentTarget.dataset.id;
+          document.getElementById('read-plaintext').style.display = 'none';
+          document.getElementById('read-plaintext').textContent = '';
+          document.getElementById('msg_code').value = '';
+          document.getElementById('account_code').value = '';
+          showError(document.getElementById('read-error'), '');
+          // If inbox item may be protected, show code input by default hidden; we'll reveal if server says required
+          document.getElementById('requires-code-row').style.display = 'none';
+          // set meta
+          document.getElementById('read-meta').textContent = (currentRead.box === 'inbox' ? 'Lecture (réception) — ID ' : 'Message envoyé — ID ') + currentRead.id;
+          // reveal modal
+          readModal.show();
+          // if sent box, no extra code needed (we stored plaintext)
+          if (currentRead.box === 'sent') {
+            // show account code as optional (not needed) but keep visible
+            document.getElementById('account-code-row').style.display = 'none';
+          } else {
+            document.getElementById('account-code-row').style.display = 'block';
+          }
+        });
+      });
+
+      document.getElementById('readDecryptBtn').addEventListener('click', async () => {
+        showError(document.getElementById('read-error'), '');
+        const btn = document.getElementById('readDecryptBtn');
+        btn.disabled = true;
+        try {
+          const payload = { box: currentRead.box, msg_id: currentRead.id };
+          const code = document.getElementById('msg_code').value;
+          const account_code = document.getElementById('account_code').value;
+          if (code) payload.code = code;
+          if (account_code) payload.account_code = account_code;
+          const res = await fetch('/api/message/read', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(payload)
+          });
+          const j = await res.json();
+          if (res.ok && j.ok) {
+            document.getElementById('read-plaintext').style.display = 'block';
+            document.getElementById('read-plaintext').textContent = j.plaintext;
+            // hide inputs once decrypted
+            document.getElementById('requires-code-row').style.display = 'none';
+            document.getElementById('account-code-row').style.display = 'none';
+          } else {
+            // If server asks for code (401) show code row
+            if (res.status === 401) {
+              showError(document.getElementById('read-error'), j.error || 'Accès refusé');
+              // show the code input if it's an inbox-protected case
+              document.getElementById('requires-code-row').style.display = 'block';
+            } else {
+              showError(document.getElementById('read-error'), j.error || 'Erreur lecture');
+            }
+          }
+        } catch (err) {
+          showError(document.getElementById('read-error'), 'Erreur réseau');
+        } finally {
+          btn.disabled = false;
+        }
+      });
+
+      // Delete
+      document.getElementById('deleteMsgBtn').addEventListener('click', async () => {
+        if (!confirm('Voulez-vous vraiment supprimer ce message ?')) return;
+        const res = await fetch('/api/message/delete', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ box: currentRead.box, msg_id: currentRead.id })
+        });
+        const j = await res.json();
+        if (res.ok && j.ok) {
+          readModal.hide();
+          location.reload();
+        } else {
+          showError(document.getElementById('read-error'), j.error || 'Erreur suppression');
+        }
+      });
+
+      // Delete buttons in lists
+      document.querySelectorAll('.del-btn').forEach(b => {
+        b.addEventListener('click', async (ev) => {
+          const box = ev.currentTarget.dataset.box;
+          const id = ev.currentTarget.dataset.id;
+          if (!confirm('Supprimer ce message ?')) return;
+          const res = await fetch('/api/message/delete', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ box, msg_id: id })
+          });
+          const j = await res.json();
+          if (res.ok && j.ok) location.reload(); else alert(j.error || 'Erreur');
+        });
+      });
+
+      // When modal opens for inbox read, show requires-code row only if server later complains;
+      // For nice UX: when opening for inbox, pre-show requires-code input hidden; server will prompt by 401 response.
+
+      // Small UX: when compose modal hidden, clear fields
+      document.getElementById('composeModal').addEventListener('hidden.bs.modal', () => {
+        document.getElementById('compose-recipient').value = '';
+        document.getElementById('compose-content').value = '';
+        document.getElementById('compose-code').value = '';
+      });
+      // === Autocomplete emails ===
+const emailInput = document.getElementById('compose-recipient');
+const emailList = document.getElementById('emailList');
+
+emailInput.addEventListener('focus', async () => {
+  // si déjà chargé, ne recharge pas
+  if (emailList.children.length > 0) return;
+  try {
+    const res = await fetch('/api/users');
+    const j = await res.json();
+    if (res.ok && j.emails) {
+      emailList.innerHTML = ''; // vide
+      j.emails.forEach(e => {
+        const opt = document.createElement('option');
+        opt.value = e;
+        emailList.appendChild(opt);
+      });
+    }
+  } catch (err) {
+    console.warn('Erreur chargement liste emails', err);
+  }
+});
+
+    </script>
+  </body>
+</html>

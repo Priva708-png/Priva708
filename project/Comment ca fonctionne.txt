@@ -1,0 +1,74 @@
+project/
+│
+├── server.py                    # ⚙️ Serveur Flask principal (routes, JWT, logique API)
+│
+├── requirements.txt             # 📦 Dépendances Python (Flask, PyJWT, cryptography, etc.)
+├── render.yaml / Procfile        # 🚀 Fichier de déploiement Render (commande de lancement)
+│
+├── /core/                       # 🔐 Noyau de la logique (crypto + gestion utilisateurs)
+│   ├── __init__.py              # (vide ou imports internes)
+│   ├── crypto.py                # Chiffrement / déchiffrement RSA + Fernet + scrypt
+│   └── storage.py               # Gestion des utilisateurs, messages, bans, admin utils
+│
+├── /data/                       # 💾 Données persistantes locales (JSON)
+│   ├── users.json               # Base d’utilisateurs (comptes, messages, clés RSA)
+│   └── bans.json                # Liste des comptes / IP bannis
+│
+├── /templates/                  # 🎨 Pages HTML (Bootstrap + Jinja2)
+│   ├── base.html                # Layout général (header, style Glassmorphism)
+│   ├── login.html               # Page de connexion
+│   ├── register.html            # Page d’inscription
+│   ├── inbox.html               # Boîte de réception + envoi de message (modales)
+│   └── admin.html               # Panneau d’administration (liste, reset, ban, etc.)
+│
+└── /static/                     # 🌈 Contenus statiques (CSS, JS, images)
+    ├── css/                     # Styles additionnels
+    └── js/                      # Scripts JS optionnels
+
+
+
+
+
+| Dossier / Fichier          | Rôle principal                                                                                                                 |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| **server.py**              | Cœur du serveur : gère les routes Flask, l’authentification JWT (cookie httpOnly), les API (register, login, messages, admin). |
+| **core/**                  | Contient la logique métier : chiffrement RSA/Fernet (`crypto.py`) et gestion des comptes et messages (`storage.py`).           |
+| **data/**                  | Sauvegarde locale en JSON (simulateur de base de données).                                                                     |
+| **templates/**             | Fichiers HTML utilisant Jinja2 et Bootstrap (interface Glassmorphism).                                                         |
+| **static/**                | Ressources statiques : images, feuilles de style, scripts JS.                                                                  |
+| **requirements.txt**       | Liste des dépendances pour `pip install -r requirements.txt`.                                                                  |
+| **render.yaml / Procfile** | Fichiers de déploiement sur Render (définissent comment lancer `python server.py`).                                            |
+
+
+
+
+
+Navigateur ⇄ Flask (server.py) ⇄ core/storage.py ⇄ data/users.json
+                           ⇵
+                        core/crypto.py (RSA / Fernet)
+
+Explication :
+
+L’utilisateur interagit via l’interface (/login, /register, /inbox, /admin).
+
+Flask (dans server.py) traite la requête.
+
+Les données utilisateurs/messages sont lues ou écrites via core/storage.py.
+
+Les clés RSA et les messages sont chiffrés/déchiffrés via core/crypto.py.
+
+Le tout est sauvegardé dans data/users.json.
+
+
+
+
+
+🔐 Partie sécurité
+
+JWT stocké en cookie HttpOnly.
+
+RSA pour sécuriser les messages.
+
+Super Admin : admin@gmail.com (créé automatiquement avec son code).
+
+Bans gérés via data/bans.json.
