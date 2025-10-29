@@ -5,6 +5,10 @@ import base64
 from datetime import datetime, timedelta
 from functools import wraps
 
+from flask_socketio import SocketIO, emit, join_room, leave_room
+import eventlet
+eventlet.monkey_patch()
+
 from core.storage import ensure_admin_exists
 ensure_admin_exists()
 
@@ -29,6 +33,12 @@ JWT_EXP_MINUTES = 60 * 24  # minutes (1 day)
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+
+# initialisation SocketIO (autoriser cors pour tests locaux)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+
+# map user email -> sid
+connected_users = {}  # { email: sid }
 
 # Jinja filter for timestamps
 @app.template_filter('datetimeformat')
@@ -215,6 +225,71 @@ def api_message_send():
     code_hash = None
     if requires_code and code_for_recipient:
         code_hash = make_password_hash(code_for_recipient)
+
+    # -------------- Socket handlers --------------
+@socketio.on('connect')
+def on_connect(auth):
+    # auth is None for default websocket; we will read jwt from cookies
+    token = request.cookies.get('access_token')
+    payload = decode_jwt(token) if token else None
+    if not payload:
+        # refuse connection: anonymous not allowed
+        return False  # disconnect client
+    email = payload.get('sub')
+    if not email:
+        return False
+    sid = request.sid
+    connected_users[email] = sid
+    print(f"[socket] connect: {email} -> {sid}")
+    # optionally join room per email
+    join_room(sid)
+
+@socketio.on('disconnect')
+def on_disconnect():
+    sid = request.sid
+    # remove from map
+    to_remove = [e for e, s in connected_users.items() if s == sid]
+    for e in to_remove:
+        print(f"[socket] disconnect: {e}")
+        connected_users.pop(e, None)
+
+# Forward offer from caller -> callee
+@socketio.on('webrtc_offer')
+def on_webrtc_offer(data):
+    # data: { to: recipient_email, from: sender_email, sdp: {...} }
+    to = data.get('to')
+    if not to or to not in connected_users:
+        emit('webrtc_error', {'error': 'dest_not_online'})
+        return
+    target_sid = connected_users[to]
+    emit('webrtc_offer', data, to=target_sid)
+
+# Forward answer from callee -> caller
+@socketio.on('webrtc_answer')
+def on_webrtc_answer(data):
+    to = data.get('to')
+    if not to or to not in connected_users:
+        emit('webrtc_error', {'error': 'dest_not_online'})
+        return
+    target_sid = connected_users[to]
+    emit('webrtc_answer', data, to=target_sid)
+
+# Forward ICE candidates both ways
+@socketio.on('webrtc_ice')
+def on_webrtc_ice(data):
+    to = data.get('to')
+    if not to or to not in connected_users:
+        return
+    target_sid = connected_users[to]
+    emit('webrtc_ice', data, to=target_sid)
+
+# Optional: simple "call_user" event to notify incoming call (UI)
+@socketio.on('call_user')
+def on_call_user(data):
+    # data: { to, from }
+    to = data.get('to')
+    if to in connected_users:
+        emit('incoming_call', data, to=connected_users[to])
 
     # Create message for recipient inbox
     msg = {
@@ -439,4 +514,5 @@ def api_admin_delete_user():
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+
+    socketio.run(app, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
