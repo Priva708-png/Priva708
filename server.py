@@ -9,12 +9,6 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 import eventlet
 eventlet.monkey_patch()
 
-from core.storage import ensure_admin_exists
-ensure_admin_exists()
-
-from flask import Flask, request, render_template, jsonify, redirect, url_for, make_response
-import jwt
-
 from core.storage import (
     load_users, save_users, load_bans, ensure_admin_exists, gen_msg_id,
     list_users_summary, ban_user, unban_user, disable_user, enable_user,
@@ -25,22 +19,24 @@ from core.crypto import (
     encrypt_with_password, hybrid_encrypt_for_public, hybrid_decrypt_with_private_enc,
     decrypt_with_password
 )
+from flask import Flask, request, render_template, jsonify, redirect, url_for, make_response
+import jwt
 
-# CONFIG
+# ---------------- Config ----------------
 JWT_SECRET = os.environ.get('JWT_SECRET', 'change-this-secret-in-prod')
 JWT_ALGO = 'HS256'
-JWT_EXP_MINUTES = 60 * 24  # minutes (1 day)
+JWT_EXP_MINUTES = 60 * 24
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
-# initialisation SocketIO (autoriser cors pour tests locaux)
+# WebSocket
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
-# map user email -> sid
-connected_users = {}  # { email: sid }
+# Connected users
+connected_users = {}
 
-# Jinja filter for timestamps
+# ---------------- Jinja filter ----------------
 @app.template_filter('datetimeformat')
 def datetimeformat(value, fmt='%Y-%m-%d %H:%M'):
     try:
@@ -48,25 +44,55 @@ def datetimeformat(value, fmt='%Y-%m-%d %H:%M'):
     except Exception:
         return "-"
 
-# Ensure admin exists at startup
-ensure_admin_exists()
+# ---------------- Admin auto-setup ----------------
+def ensure_super_admin():
+    users = load_users()
+    email = "admin@gmail.com"
+    if email not in users:
+        print("[setup] Création du compte Super Admin...")
+        priv_pem, pub_pem = generate_rsa_keypair()
+        code = "06122578685238242469440250169"
+        priv_enc = encrypt_with_password(priv_pem, code)
+        pub_b64 = base64.b64encode(pub_pem).decode()
+        pwdhash = make_password_hash(code)
+        users[email] = {
+            'first': 'Super',
+            'last': 'ADMIN',
+            'password_hash': pwdhash,
+            'pub_key': pub_b64,
+            'priv_key_encrypted': priv_enc,
+            'inbox': [],
+            'sentbox': [],
+            'is_admin': True,
+            'disabled': False,
+            'created_at': time.time(),
+            'meta': {}
+        }
+        save_users(users)
+        print(f"[setup] Super admin créé : {email}")
+    else:
+        if not users[email].get("is_admin"):
+            users[email]["is_admin"] = True
+            save_users(users)
+            print("[setup] Super admin existant mis à jour.")
 
+ensure_super_admin()
+
+# ---------------- JWT utils ----------------
 def create_jwt(payload: dict, minutes=JWT_EXP_MINUTES):
     exp = datetime.utcnow() + timedelta(minutes=minutes)
     payload2 = payload.copy()
     payload2.update({'exp': exp})
     token = jwt.encode(payload2, JWT_SECRET, algorithm=JWT_ALGO)
-    if isinstance(token, bytes):
-        token = token.decode()
-    return token
+    return token.decode() if isinstance(token, bytes) else token
 
 def decode_jwt(token):
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
-        return payload
+        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
     except Exception:
         return None
 
+# ---------------- Decorators ----------------
 def auth_required(f):
     @wraps(f)
     def inner(*args, **kwargs):
@@ -76,7 +102,7 @@ def auth_required(f):
         payload = decode_jwt(token)
         if not payload:
             resp = make_response(redirect(url_for('login')))
-            resp.set_cookie('access_token', '', expires=0, httponly=True, samesite='Lax', secure=False)
+            resp.set_cookie('access_token', '', expires=0)
             return resp
         request.user_email = payload.get('sub')
         return f(*args, **kwargs)
@@ -86,11 +112,9 @@ def admin_required(f):
     @wraps(f)
     def inner(*args, **kwargs):
         token = request.cookies.get('access_token')
-        if not token:
-            return jsonify({'error': 'Authentication required'}), 401
-        payload = decode_jwt(token)
+        payload = decode_jwt(token) if token else None
         if not payload:
-            return jsonify({'error': 'Invalid token'}), 401
+            return jsonify({'error': 'Authentication required'}), 401
         email = payload.get('sub')
         users = load_users()
         u = users.get(email)
@@ -100,7 +124,7 @@ def admin_required(f):
         return f(*args, **kwargs)
     return inner
 
-# ---------- Pages ----------
+# ---------------- Routes HTML ----------------
 @app.route('/')
 def index():
     token = request.cookies.get('access_token')
@@ -108,15 +132,13 @@ def index():
         return redirect(url_for('inbox'))
     return redirect(url_for('login'))
 
-@app.route('/login', methods=['GET'])
-def login():
-    return render_template('login.html')
+@app.route('/login')
+def login(): return render_template('login.html')
 
-@app.route('/register', methods=['GET'])
-def register_page():
-    return render_template('register.html')
+@app.route('/register')
+def register_page(): return render_template('register.html')
 
-# ---------- API: register/login/logout ----------
+# ---------------- API: Auth ----------------
 @app.route('/api/register', methods=['POST'])
 def api_register():
     data = request.json or request.form
@@ -158,34 +180,30 @@ def api_login():
     email = (data.get('email') or '').strip()
     code = data.get('code') or ''
     users = load_users()
-    if email not in users:
-        return jsonify({'error': 'Compte introuvable'}), 404
-    u = users[email]
-    if u.get('disabled'):
-        return jsonify({'error': 'Compte désactivé'}), 403
+    u = users.get(email)
+    if not u: return jsonify({'error': 'Compte introuvable'}), 404
+    if u.get('disabled'): return jsonify({'error': 'Compte désactivé'}), 403
     if not verify_password(code, u['password_hash']):
         return jsonify({'error': 'Code invalide'}), 401
     token = create_jwt({'sub': email, 'iat': int(time.time())})
     resp = make_response(jsonify({'ok': True}))
-    # secure=True in prod (HTTPS)
-    resp.set_cookie('access_token', token, httponly=True, samesite='Lax', secure=False, max_age=60*60*24)
+    resp.set_cookie('access_token', token, httponly=True, max_age=86400)
     return resp
 
 @app.route('/api/logout', methods=['POST'])
 def api_logout():
     resp = make_response(jsonify({'ok': True}))
-    resp.set_cookie('access_token', '', expires=0, httponly=True, samesite='Lax', secure=False)
+    resp.set_cookie('access_token', '', expires=0)
     return resp
 
-# ---------- Inbox page ----------
-@app.route('/inbox', methods=['GET'])
+# ---------------- Inbox ----------------
+@app.route('/inbox')
 @auth_required
 def inbox():
     users = load_users()
     u = users.get(request.user_email)
     if not u:
         return redirect(url_for('login'))
-    # Provide lightweight listings (id, from/to, timestamp, requires_code)
     inbox_entries = [{
         'id': m['id'],
         'from': m.get('from'),
@@ -199,7 +217,7 @@ def inbox():
     } for m in sorted(u.get('sentbox', []), key=lambda x: x.get('timestamp', 0), reverse=True)]
     return render_template('inbox.html', user=u, inbox=inbox_entries, sent=sent_entries)
 
-# ---------- API: send / read / delete ----------
+# ---------------- API: Messaging ----------------
 @app.route('/api/message/send', methods=['POST'])
 @auth_required
 def api_message_send():
@@ -216,82 +234,10 @@ def api_message_send():
     if recipient not in users:
         return jsonify({'error': 'Destinataire introuvable'}), 404
 
-    # Encrypt payload for recipient
     pub_b64 = users[recipient].get('pub_key')
-    if not pub_b64:
-        return jsonify({'error': 'Destinataire sans clé publique'}), 400
-
     enc_struct = hybrid_encrypt_for_public(pub_b64, content)
-    code_hash = None
-    if requires_code and code_for_recipient:
-        code_hash = make_password_hash(code_for_recipient)
+    code_hash = make_password_hash(code_for_recipient) if (requires_code and code_for_recipient) else None
 
-    # -------------- Socket handlers --------------
-@socketio.on('connect')
-def on_connect(auth):
-    # auth is None for default websocket; we will read jwt from cookies
-    token = request.cookies.get('access_token')
-    payload = decode_jwt(token) if token else None
-    if not payload:
-        # refuse connection: anonymous not allowed
-        return False  # disconnect client
-    email = payload.get('sub')
-    if not email:
-        return False
-    sid = request.sid
-    connected_users[email] = sid
-    print(f"[socket] connect: {email} -> {sid}")
-    # optionally join room per email
-    join_room(sid)
-
-@socketio.on('disconnect')
-def on_disconnect():
-    sid = request.sid
-    # remove from map
-    to_remove = [e for e, s in connected_users.items() if s == sid]
-    for e in to_remove:
-        print(f"[socket] disconnect: {e}")
-        connected_users.pop(e, None)
-
-# Forward offer from caller -> callee
-@socketio.on('webrtc_offer')
-def on_webrtc_offer(data):
-    # data: { to: recipient_email, from: sender_email, sdp: {...} }
-    to = data.get('to')
-    if not to or to not in connected_users:
-        emit('webrtc_error', {'error': 'dest_not_online'})
-        return
-    target_sid = connected_users[to]
-    emit('webrtc_offer', data, to=target_sid)
-
-# Forward answer from callee -> caller
-@socketio.on('webrtc_answer')
-def on_webrtc_answer(data):
-    to = data.get('to')
-    if not to or to not in connected_users:
-        emit('webrtc_error', {'error': 'dest_not_online'})
-        return
-    target_sid = connected_users[to]
-    emit('webrtc_answer', data, to=target_sid)
-
-# Forward ICE candidates both ways
-@socketio.on('webrtc_ice')
-def on_webrtc_ice(data):
-    to = data.get('to')
-    if not to or to not in connected_users:
-        return
-    target_sid = connected_users[to]
-    emit('webrtc_ice', data, to=target_sid)
-
-# Optional: simple "call_user" event to notify incoming call (UI)
-@socketio.on('call_user')
-def on_call_user(data):
-    # data: { to, from }
-    to = data.get('to')
-    if to in connected_users:
-        emit('incoming_call', data, to=connected_users[to])
-
-    # Create message for recipient inbox
     msg = {
         'id': gen_msg_id(users),
         'from': request.user_email,
@@ -303,7 +249,6 @@ def on_call_user(data):
     }
     users[recipient].setdefault('inbox', []).append(msg)
 
-    # Create a sent copy for sender (store plaintext for convenience)
     sent_msg = {
         'id': msg['id'],
         'to': recipient,
@@ -311,208 +256,71 @@ def on_call_user(data):
         'requires_code': requires_code,
         'timestamp': msg['timestamp']
     }
-    users.setdefault(request.user_email, {}).setdefault('sentbox', []).append(sent_msg)
-
+    users[request.user_email].setdefault('sentbox', []).append(sent_msg)
     save_users(users)
     return jsonify({'ok': True, 'msg_id': msg['id']})
 
-@app.route('/api/message/read', methods=['POST'])
-@auth_required
-def api_message_read():
-    data = request.json or request.form
-    box = data.get('box')  # 'inbox' or 'sent'
-    try:
-        msg_id = int(data.get('msg_id'))
-    except Exception:
-        return jsonify({'error': 'msg_id invalide'}), 400
+# ---------------- WebRTC Socket.IO ----------------
+@socketio.on('connect')
+def on_connect(auth=None):
+    token = request.cookies.get('access_token')
+    payload = decode_jwt(token) if token else None
+    if not payload:
+        return False
+    email = payload.get('sub')
+    connected_users[email] = request.sid
+    join_room(request.sid)
+    print(f"[socket] connect: {email}")
 
-    users = load_users()
-    user = users.get(request.user_email)
-    if not user:
-        return jsonify({'error': 'Utilisateur introuvable'}), 404
+@socketio.on('disconnect')
+def on_disconnect():
+    sid = request.sid
+    for email, s in list(connected_users.items()):
+        if s == sid:
+            connected_users.pop(email, None)
+            print(f"[socket] disconnect: {email}")
 
-    if box == 'inbox':
-        # find message in inbox
-        item = next((m for m in user.get('inbox', []) if m.get('id') == msg_id), None)
-        if not item:
-            return jsonify({'error': 'Message introuvable'}), 404
-        # if protected by code, verify it
-        if item.get('requires_code'):
-            code = data.get('code') or ''
-            if not code:
-                return jsonify({'error': 'Code requis'}, 401)
-            # verify code hash (hash stored for recipient)
-            if not item.get('code_hash') or not verify_password(code, item.get('code_hash')):
-                return jsonify({'error': 'Code invalide'}, 401)
-        # decrypt recipient private key using user's provided code (their account code)
-        # The private key was encrypted with the user's own account code at registration
-        # The user must provide their account code here to unlock their private key
-        account_code = data.get('account_code') or ''
-        if not account_code:
-            return jsonify({'error': 'account_code requis pour déchiffrement de la clé privée'}, 401)
-        try:
-            priv_encrypted_b64 = user.get('priv_key_encrypted')
-            priv_pem = decrypt_with_password(priv_encrypted_b64, account_code)
-        except Exception as e:
-            return jsonify({'error': 'Impossible de déchiffrer la clé privée (account_code invalide?)'}), 401
+@socketio.on('webrtc_offer')
+def on_webrtc_offer(data):
+    to = data.get('to')
+    if to in connected_users:
+        emit('webrtc_offer', data, to=connected_users[to])
 
-        # Now decrypt the payload (hybrid)
-        try:
-            plaintext = hybrid_decrypt_with_private_enc(priv_pem, item['payload'])
-        except Exception as e:
-            return jsonify({'error': 'Déchiffrement message échoué'}), 500
+@socketio.on('webrtc_answer')
+def on_webrtc_answer(data):
+    to = data.get('to')
+    if to in connected_users:
+        emit('webrtc_answer', data, to=connected_users[to])
 
-        return jsonify({
-            'ok': True,
-            'from': item.get('from'),
-            'timestamp': item.get('timestamp'),
-            'plaintext': plaintext
-        })
+@socketio.on('webrtc_ice')
+def on_webrtc_ice(data):
+    to = data.get('to')
+    if to in connected_users:
+        emit('webrtc_ice', data, to=connected_users[to])
 
-    elif box == 'sent':
-        # sender looking at sentbox -> we stored plaintext in 'plain'
-        item = next((m for m in user.get('sentbox', []) if m.get('id') == msg_id), None)
-        if not item:
-            return jsonify({'error': 'Message envoyé introuvable'}), 404
-        return jsonify({
-            'ok': True,
-            'to': item.get('to'),
-            'timestamp': item.get('timestamp'),
-            'plaintext': item.get('plain')
-        })
-    else:
-        return jsonify({'error': 'box invalide'}), 400
+@socketio.on('call_user')
+def on_call_user(data):
+    to = data.get('to')
+    if to in connected_users:
+        emit('incoming_call', data, to=connected_users[to])
 
-@app.route('/api/message/delete', methods=['POST'])
-@auth_required
-def api_message_delete():
-    data = request.json or request.form
-    box = data.get('box')
-    try:
-        msg_id = int(data.get('msg_id'))
-    except Exception:
-        return jsonify({'error': 'msg_id invalide'}), 400
-
-    users = load_users()
-    user = users.get(request.user_email)
-    if not user:
-        return jsonify({'error': 'Utilisateur introuvable'}), 404
-
-    if box == 'inbox':
-        before = len(user.get('inbox', []))
-        user['inbox'] = [m for m in user.get('inbox', []) if m.get('id') != msg_id]
-        save_users(users)
-        return jsonify({'ok': True, 'removed': before - len(user['inbox'])})
-    elif box == 'sent':
-        before = len(user.get('sentbox', []))
-        user['sentbox'] = [m for m in user.get('sentbox', []) if m.get('id') != msg_id]
-        save_users(users)
-        return jsonify({'ok': True, 'removed': before - len(user['sentbox'])})
-    else:
-        return jsonify({'error': 'box invalide'}), 400
-    
-@app.route('/api/users', methods=['GET'])
-@auth_required
-def api_users_list():
-    users = load_users()
-    emails = [e for e in users.keys()]
-    return jsonify({'emails': emails})
-
-# Admin page (UI)
-@app.route('/admin', methods=['GET'])
+# ---------------- Admin Panel ----------------
+@app.route('/admin')
 @auth_required
 def admin_page_redirect():
-    # redirect only if user is admin, else back to inbox
     users = load_users()
     u = users.get(request.user_email)
     if not u or not u.get('is_admin'):
         return redirect(url_for('inbox'))
     return render_template('admin.html', user=u)
 
-# API: list users summary (admin)
-@app.route('/api/admin/users', methods=['GET'])
-@admin_required
-def api_admin_users():
-    return jsonify({'users': list_users_summary()})
+@app.route('/api/users')
+@auth_required
+def api_users_list():
+    users = load_users()
+    return jsonify({'emails': list(users.keys())})
 
-# API: ban / unban
-@app.route('/api/admin/ban', methods=['POST'])
-@admin_required
-def api_admin_ban():
-    data = request.json or request.form
-    email = (data.get('email') or '').strip()
-    if not email:
-        return jsonify({'error': 'email requis'}), 400
-    ban_user(email)
-    return jsonify({'ok': True})
-
-@app.route('/api/admin/unban', methods=['POST'])
-@admin_required
-def api_admin_unban():
-    data = request.json or request.form
-    email = (data.get('email') or '').strip()
-    if not email:
-        return jsonify({'error': 'email requis'}), 400
-    unban_user(email)
-    return jsonify({'ok': True})
-
-# API: disable / enable account
-@app.route('/api/admin/disable', methods=['POST'])
-@admin_required
-def api_admin_disable():
-    data = request.json or request.form
-    email = (data.get('email') or '').strip()
-    if not email:
-        return jsonify({'error': 'email requis'}), 400
-    ok = disable_user(email)
-    if ok:
-        return jsonify({'ok': True})
-    return jsonify({'error': 'Utilisateur introuvable'}), 404
-
-@app.route('/api/admin/enable', methods=['POST'])
-@admin_required
-def api_admin_enable():
-    data = request.json or request.form
-    email = (data.get('email') or '').strip()
-    if not email:
-        return jsonify({'error': 'email requis'}), 400
-    ok = enable_user(email)
-    if ok:
-        return jsonify({'ok': True})
-    return jsonify({'error': 'Utilisateur introuvable'}), 404
-
-# API: reset account (regenerate key + reset code). Admin can set new_code or let server generate one.
-@app.route('/api/admin/reset_account', methods=['POST'])
-@admin_required
-def api_admin_reset_account():
-    data = request.json or request.form
-    email = (data.get('email') or '').strip()
-    new_code = data.get('new_code') or None
-    if not email:
-        return jsonify({'error': 'email requis'}), 400
-    ok, info = reset_account(email, new_code)
-    if not ok:
-        return jsonify({'error': info}), 404
-    # info = new_code (string) returned
-    return jsonify({'ok': True, 'new_code': info})
-
-# API: delete user
-@app.route('/api/admin/delete_user', methods=['POST'])
-@admin_required
-def api_admin_delete_user():
-    data = request.json or request.form
-    email = (data.get('email') or '').strip()
-    if not email:
-        return jsonify({'error': 'email requis'}), 400
-    if email == request.user_email:
-        return jsonify({'error': "Vous ne pouvez pas supprimer votre propre compte"}), 400
-    ok = delete_user(email)
-    if ok:
-        return jsonify({'ok': True})
-    return jsonify({'error': 'Utilisateur introuvable'}), 404
-
+# ---------------- Run ----------------
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 5000))
-
-    socketio.run(app, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
+    socketio.run(app, host="0.0.0.0", port=port, debug=True)
