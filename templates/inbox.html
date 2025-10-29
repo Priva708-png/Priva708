@@ -273,11 +273,52 @@
       const readModal = new bootstrap.Modal(document.getElementById('readModal'));
       let currentRead = { box: null, id: null, requires_code: false };
 
-      document.querySelectorAll('.del-btn').forEach(b => {
-        b.addEventListener('click', async (ev) => {
-			...
-		});
-	  });
+// Delete (event delegation) — gère aussi les éléments ajoutés dynamiquement
+document.addEventListener('click', async function (ev) {
+  const btn = ev.target.closest && ev.target.closest('.del-btn');
+  if (!btn) return; // click pas sur un bouton delete
+
+  ev.preventDefault();
+  const box = btn.dataset.box;
+  const id = btn.dataset.id;
+  if (!box || !id) {
+    console.warn('del-btn manque data-box ou data-id', btn);
+    alert('Erreur interne : identifiant manquant.');
+    return;
+  }
+
+  if (!confirm('Supprimer ce message ?')) return;
+
+  try {
+    btn.disabled = true;
+    btn.classList.add('opacity-50');
+    const res = await fetch('/api/message/delete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ box: box, msg_id: id })
+    });
+    const j = await res.json();
+    if (res.ok && j.ok) {
+      // Option 1: reload page
+      // location.reload();
+
+      // Option 2: retirer l'élément du DOM sans reload
+      const li = btn.closest('.list-group-item');
+      if (li) li.remove();
+      // si tu veux, afficher un petit toast
+    } else {
+      console.error('delete error', j);
+      alert(j.error || 'Erreur suppression');
+      btn.disabled = false;
+      btn.classList.remove('opacity-50');
+    }
+  } catch (err) {
+    console.error('Erreur fetch delete', err);
+    alert('Erreur réseau lors de la suppression');
+    btn.disabled = false;
+    btn.classList.remove('opacity-50');
+  }
+});
           currentRead.box = ev.currentTarget.dataset.box;
           currentRead.id = ev.currentTarget.dataset.id;
           document.getElementById('read-plaintext').style.display = 'none';
@@ -620,4 +661,5 @@
     </script>
   </body>
 </html>
+
 
